@@ -1,0 +1,568 @@
+---
+title: "FamPhysDataExploration"
+author: "Ashlee Mikkelsen"
+date: "'r Sys.Date()'"
+output: word_document
+toc: true
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+This is the second version of the initial modeling for this analysis. The first bit, in which I did the data clean-up and covariate building was lost. HUGE bummer.
+
+Following the same procedure as in other files, I corrected the cortisol based on the kit that was used by the lab, I corrected d13C for the Suess effect, and I generated litter and year specific covaraites to link the maternal physiological indicators to those of her current litter.
+
+# Environment set-up
+
+## Set working directory
+
+```{r, include=FALSE}
+rm(list=ls())
+setwd("~/Rprojects/BrownBearFamilyPhysiology")
+```
+
+## Load required packages
+
+```{r, include=FALSE}
+library(ggplot2)
+library(wiqid)
+library(rstan)
+library(brms)
+library(viridis)
+library(patchwork) # for multi-panel plots
+library(gridExtra)
+library(dplyr)
+
+```
+
+## set graphing theme
+
+```{r, include=FALSE}
+
+mytheme <- theme(
+    axis.text = element_text(size = 12,face = "bold"),
+    axis.title = element_text(size = 14, face = "bold"),
+    panel.grid.major = element_line(color = "grey92"),
+    panel.grid.minor = element_line(color = "grey96"),
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black",size = 1),
+    axis.ticks = element_line(size = 1),
+    )
+theme_set(mytheme)
+
+P <- palette(viridis(40))
+P <- palette(viridis(40))
+
+```
+
+## Load Data
+
+01.11.2023- I went into datasheet9 and calculated three new covariates: CortRat, CondRat, and NitRat, which is the ratio between measure cortisol of an individual and the litter average cortisol. For females, this can be interpreted as how their own hair cortisol compares to the average within their litter. For offspring, this would represent how that individual's hair cortisol related to the average of the litter it came from. In cases of single offspring, this ratio will be 1. The new datasheet is number 10
+
+
+```{r, include=FALSE}
+
+FamPhys <- read.csv("RawFamPhysDat10.csv")
+FamPhys <- subset(FamPhys, year<2013)
+FamPhys$cort.kit <- as.factor(FamPhys$cort.kit)
+MatPhys <- subset(FamPhys, repro=="WithCubs")
+OffPhys <- subset(FamPhys, repro=="WithMother")
+
+NumPhys <- subset(FamPhys[,c(2,5,7,13,15,18,19,20,21,22,23,24,25,26)])
+
+```
+
+# Data exploration
+
+## Pairs plot
+
+```{r}
+
+pairs(NumPhys)
+
+```
+
+### Interesting pairs
+
+#### Condition (both repro classes) by year
+
+```{r}
+
+ggplot(data = FamPhys, aes(year,condition))+
+  geom_jitter(aes(color=repro, pch=repro), size=3, width=0.2, alpha=0.7)+
+  scale_color_manual(values = c(P[5],P[35]))+
+  scale_x_continuous(expand = c(0,0))+
+  scale_y_continuous(expand = c(0,0),
+                     breaks = seq(0,2,0.25))
+
+```
+
+Condition seems to be declining in females with cubs, and while there is (perhaps) also a decline in offspring, it is not as pronounced
+
+
+#### Year and nitrogen
+```{r}
+
+ggplot(data = FamPhys, aes(year,N15))+
+  geom_jitter(aes(color=repro, pch=repro), size=3, width=0.2, alpha=0.7)+
+  scale_color_manual(values = c(P[5],P[35]))
+
+```
+
+early in the time series, there might be a difference between females and dependent oiffspring, but it seems like the difference disappears later in the time series
+
+```{r}
+
+ggplot(data = FamPhys, aes(year,NitRat))+
+  geom_jitter(aes(color=repro, pch=repro), size=3, width=0.2, alpha=0.7)+
+  scale_color_manual(values = c(P[5],P[35]))
+
+```
+
+when we look at the ratio, there is a lot more variation between females and their litter average tyhan tyhere is between offspring of the same litter. This makes some intuitive sense, the females (if they can) would be regulating $\delta^{15}N$ ratios through milk, which all members of the litter should have equal access to. However, it may be interesting to explore varition within the same dam across litters given her own condition and perhaps the condition and sex of the offspring
+
+```{r}
+
+ggplot(data = FamPhys, aes(year,NitRat))+
+  geom_jitter(aes(color=sex, pch=repro), size=3, width=0.2, alpha=0.7)+
+  scale_color_manual(values = c(P[15],P[25]))+
+  
+  ggplot(data = OffPhys, aes(year))+
+  geom_histogram(aes(fill=sex), binwidth = 1)+
+  scale_fill_manual(values = c(P[15],P[25]))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))
+
+```
+
+## Distributions
+
+First, I will look at the distributions of my 3 focal covariates: cortisol, condition, and $\delta^{15}N$. 
+
+### Cortisol
+
+```{r, fig.height=5, fig.width=8, fig.cap= "Distributions of cortisol in dependent offspring and dams"}
+
+ggplot(data = FamPhys, aes(cort))+
+  geom_histogram(binwidth = 0.5*sd(FamPhys$cort), fill=P[1])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,30))+
+  geom_text(label="Cortisol all Samples\nN = 402",
+            y=135, x=20,
+            size=4)+
+  
+ggplot(data = MatPhys, aes(cort))+
+  geom_histogram(binwidth = 0.5*sd(MatPhys$cort),fill=P[5])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,30))+
+  geom_text(label="Maternal Cortisol\nN = 124",
+            y=135, x=20,
+            size=4)+
+  ylab("")+
+  
+ ggplot(data = OffPhys, aes(cort))+
+  geom_histogram(binwidth = 0.5*sd(OffPhys$cort), fill=P[9])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,30))+
+  geom_text(label="Offspring Cortisol\nN = 278",
+            y=135, x=20,
+            size=4)+
+  ylab("")
+
+
+```
+
+
+unsurprising for cortisol data, we see that it has a strong left-hand skew. As I have done previously, I will need to use a log- or gamma distribution with Bayesian models to analyze this data.
+
+```{r,fig.height=6, fig.width=8, fig.cap= "Distributions of cortisol comparing samples from dependent offspring and cortisol averaged per litter"}
+
+ggplot(data = OffPhys)+
+  geom_histogram(aes(cort), alpha=0.7,
+                 color=P[9], fill=P[9],
+                 binwidth = 0.5*sd(OffPhys$cort))+
+  geom_histogram(aes(LitCort), alpha=0.5,
+                 color=P[38], fill= P[38],
+                 binwidth = 0.5*sd(OffPhys$LitCort))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  geom_text(label="Cortisol from all offspring\nN=278",
+            size=5,
+            color=P[9],
+            x=8, y=77)+
+  geom_text(label="Cortisol averge per litter\nN=124",
+            size=5,
+            color=P[38],
+            fontface="bold",
+            x=8, y=65)
+
+
+```
+
+Because I needed to associate maternal cortisol with her offspring, which means one value associated with 1-4 different values, I created a litter average cortisol value. We see in this figure that the litter-averaged cortisol reflects the distribution of the raw, individual based cortisol distribution.
+
+
+
+### Condition
+
+```{r,fig.height=5, fig.width=8}
+
+ggplot(data = FamPhys, aes(condition))+
+  geom_histogram(fill=P[12], binwidth =0.5*sd(FamPhys$condition))+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0),
+                     limits = c(0,2.02))+
+  geom_text(label="Condition all Samples\nN = 402",
+            y=135, x=1.5,
+            size=4)+
+  
+ggplot(data = MatPhys, aes(condition))+
+  geom_histogram(binwidth = 0.5*sd(MatPhys$condition),fill=P[16])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,2.02))+
+  geom_text(label="Maternal Condition\nN = 124",
+            y=135, x=1.5,
+            size=4)+
+  ylab("")+
+  
+ ggplot(data = OffPhys, aes(condition))+
+  geom_histogram(binwidth = 0.5*sd(OffPhys$condition), fill=P[20])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,140))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,2.02))+
+  geom_text(label="Offspring Condition\nN = 278",
+            y=135, x=1.5,
+            size=4)+
+  ylab("")
+
+```
+
+The condition across all samples is strongly bi-modal, with a large standard deviation, because offspring tend to have a much lower body condition than reproducing females, which is illustrated when we separate out body condition between the two groups.
+
+
+```{r,fig.height=5, fig.width=8, fig.cap= "Distributions of condition comparing samples from dependent offspring and condition averaged per litter"}
+
+ggplot(data = OffPhys)+
+  geom_histogram(aes(condition), alpha=0.7,
+                 color=P[20], fill=P[20],
+                 binwidth = 0.5*sd(OffPhys$condition))+
+  geom_histogram(aes(LitCond), alpha=0.5,
+                 color=P[36], fill= P[36],
+                 binwidth = 0.5*sd(OffPhys$LitCond))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  geom_text(label="Condition from all offspring\nN=278",
+            size=5,
+            color=P[20],
+            x=1, y=62)+
+  geom_text(label="Condition averge per litter\nN=124",
+            size=5,
+            color=P[36],
+            fontface="bold",
+            x=1, y=48)
+
+
+```
+
+Averaging body condition across litters looks like it changed the overall distribution more than it did for cortisol. In general, the litter-averaged body condition is higher than the individual based distribution. I am not sure if this shift will be enough to make the litter-average co-variate unusable.
+
+```{r}
+
+MuIndCond <- mean(OffPhys$condition)
+SdIndCond <- sd(OffPhys$condition)
+
+MuLitCond <- mean(OffPhys$LitCond)
+SdLitCond <- sd(OffPhys$LitCond)
+
+((MuLitCond-MuIndCond)/SdIndCond)*100
+
+((SdIndCond-SdLitCond)/SdIndCond)*100
+
+```
+
+By averaging body condition across the litter, I have shifted the mean body condition up by 0.41%. Hardly a difference that should alter inferences. The standard deviation of the litter-averaged distribution is 4% smaller than the individual-based distribution. All in all, I think my covariate is safe to use.
+
+### Nitrogen
+
+```{r,fig.height=5, fig.width=8}
+
+ggplot(data = FamPhys, aes(N15))+
+  geom_histogram(fill=P[22], 
+                 binwidth =0.5*sd(FamPhys$N15))+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,100))+
+  scale_x_continuous(expand = c(0,0),
+                     limits = c(3,6))+
+  geom_text(label="Nitrogen values all Samples\nN = 402",
+            y=95, x=5,
+            size=4)+
+  
+ggplot(data = MatPhys, aes(N15))+
+  geom_histogram(binwidth = 0.5*sd(MatPhys$N15),
+                 fill=P[26])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,100))+
+  scale_x_continuous(expand = c(0,0),
+                     limits = c(3,6))+
+  geom_text(label="Maternal Nitrogen\nN = 124",
+           y=95, x=5,
+            size=4)+
+  ylab("")+
+  
+ ggplot(data = OffPhys, aes(N15))+
+  geom_histogram(binwidth = 0.5*sd(OffPhys$N15),
+                 fill=P[30])+
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,100))+
+  scale_x_continuous(expand = c(0,0),
+                     limits = c(3,6))+
+  geom_text(label="Offspring Nitrogen\nN = 278",
+            y=95, x=5,
+            size=4)+
+  ylab("")
+
+
+```
+
+The nitrogen values across the entire population as well as between dams and offspring have good, normal distributions.
+
+```{r,fig.height=5, fig.width=8, fig.cap= "Distributions of nitrogen signatures comparing samples from dependent offspring and nitrogen averaged per litter"}
+
+ggplot(data = OffPhys)+
+  geom_histogram(aes(N15), alpha=0.7,
+                 color=P[26], fill=P[26],
+                 binwidth = 0.5*sd(OffPhys$N15))+
+  geom_histogram(aes(LitNit), alpha=0.5,
+                 color=P[34], fill= P[34],
+                 binwidth = 0.5*sd(OffPhys$LitNit))+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0))+
+  geom_text(label="Nitrogen values from all offspring\nN=278",
+            size=5,
+            color=P[26],
+            x=6.5, y=57)+
+  geom_text(label="Nitrogen values averge per litter\nN=124",
+            size=5,
+            color=P[34],
+            fontface="bold",
+            x=6.5, y=50)
+```
+ The litter values for nitrogen are less normal than the individual distribution.
+ 
+```{r}
+
+MuIndNit <- mean(OffPhys$N15)
+SdIndNit <- sd(OffPhys$N15)
+
+MuLitNit <- mean(OffPhys$LitNit)
+SdLitNit <- sd(OffPhys$LitNit)
+
+((MuIndNit-MuLitNit)/SdIndNit)*100
+
+((SdIndNit-SdLitNit)/SdIndNit)*100
+
+```
+
+Using the litter-averaged covariate changed the overall mean by 0.37% and increased the standard deviation by 5.6%
+
+Also important to this analysis is going to be dealing with issues related to individual bear ID, family groups, cortisol kit, and year effects.(and maybe age 2? Is there differences in relationships as bears age?)
+
+### Bear ID
+
+```{r}
+FamPhys$BID <- as.numeric(as.factor(FamPhys$BearID))
+
+ggplot(data = FamPhys, aes(BID, cort))+
+  geom_point(color=P[1])
+
+DAT <- FamPhys %>%
+  group_by(BID) %>%
+  summarise(no_rows=length(BID))
+
+print(DAT, n=294)
+```
+
+
+
+```{r,fig.height=5, fig.width=8, fig.cap= "Relationships between Individual bear ID and the three main response variables"}
+
+ggplot(data = FamPhys, aes(BID, cort))+
+  geom_point(color=P[1],
+             size=1.5,
+             alpha=0.7)+
+  
+ggplot(data = FamPhys, aes(BID, condition))+
+  geom_point(color=P[12],
+             size=1.5,
+             alpha=0.7)+
+
+ggplot(data = FamPhys, aes(BID, N15))+
+  geom_point(color=P[22],
+             size=1.5,
+             alpha=0.7)
+
+```
+
+### Family ID
+
+```{r}
+
+OffPhys$FID <- as.numeric(as.factor(OffPhys$Family.ID))
+FamPhys$FID <- as.numeric(as.factor(FamPhys$Family.ID))
+
+FID.DAT <- FamPhys %>%
+  group_by(FID) %>%
+  summarise(no_rows=length(FID))
+
+
+ggplot(data = FamPhys, aes(FID, cort))+
+  geom_line(aes(group=FID))+
+  geom_point()+
+  
+ggplot(data = FamPhys, aes(FID, condition))+
+   geom_line(aes(group=FID))+
+  geom_point()+
+
+ggplot(data = FamPhys, aes(FID, N15))+
+   geom_line(aes(group=FID))+
+  geom_point()
+
+```
+
+I am not seeing any patterns of concern in the distribution of my three main factors across family ID
+
+### cortisol Kit
+
+
+
+### year
+
+
+
+### Age
+
+## Cleveland Dotplots
+
+```{r}
+dotchart(FamPhys$cort,
+         main = "Cleveland Dotplot",
+         xlab = "Cortisol")
+
+dotchart(FamPhys$condition,
+         main = "Cleveland Dotplot",
+         xlab = "Condition")
+
+dotchart(FamPhys$N15,
+         main = "Cleveland Dotplot",
+         xlab = "15N")
+
+
+```
+
+
+
+
+```{r,fig.height=5, fig.width=8}
+
+ggplot(data = OffPhys, aes(Family.ID, cort))+
+  geom_line(aes(group=Family.ID))+
+  geom_point(aes(color=cort.kit))
+
+```
+
+
+# Bayesian regression models
+```{r, eval=FALSE}
+
+DAT <- OffPhys %>%
+  group_by(BID) %>%
+  summarise(no_rows=length(BID))
+
+print(DAT)
+
+##########
+cort.gamma.INT<- brm(cort ~1,
+               data = FamPhys,
+               family = Gamma(link = "log"),
+               iter = 10000,
+               thin = 10)
+
+launch_shinystan(cort.gamma.INT)
+
+summary(cort.gamma.INT)
+options(mc.cores = 1)
+fitBID <- add_criterion(cort.gamma.INT, criterion = "loo")
+gc()
+print(fitBID$criteria$loo)
+
+BID.LOOic <- fitBID$criteria$loo$estimates[3,1]
+
+
+##########
+
+
+
+cort.gamma.INT.BID<- brm(cort ~1+(1|BearID),
+               data = FamPhys,
+               family = Gamma(link = "log"),
+               iter = 10000,
+               thin = 10)
+
+launch_shinystan(cort.gamma.INT.BID)
+
+summary(cort.gamma.INT.BID)
+options(mc.cores = 1)
+fitBID1 <- add_criterion(cort.gamma.INT.BID, criterion = "loo")
+gc()
+print(fitBID1$criteria$loo)
+
+BID1.LOOic <- fitBID1$criteria$loo$estimates[3,1]
+
+##########
+
+cort.gamma.INT.BID_fYR<- brm(cort ~1+(1|BearID)+(1|fYEAR),
+               data = FamPhys,
+               family = Gamma(link = "log"),
+               iter = 10000,
+               thin = 10)
+
+launch_shinystan(cort.gamma.INT.BID_fYR)
+
+summary(cort.gamma.INT.BID_fYR)
+options(mc.cores = 1)
+fitBID2 <- add_criterion(cort.gamma.INT.BID_fYR, criterion = "loo")
+gc()
+print(fitBID2$criteria$loo)
+
+BID2.LOOic <- fitBID2$criteria$loo$estimates[3,1]
+
+##########
+
+cort.gamma.CK.BID_CK<- brm(cort ~cort.kit+(1|BearID),
+               data = FamPhys,
+               family = Gamma(link = "log"),
+               iter = 10000,
+               thin = 10)
+
+launch_shinystan(cort.gamma.INT.BID_CK)
+
+summary(cort.gamma.INT.BID_CK)
+options(mc.cores = 1)
+fitBID3 <- add_criterion(cort.gamma.INT.BID_CK, criterion = "loo")
+gc()
+print(fitBID3$criteria$loo)
+
+BID2.LOOic <- fitBID3$criteria$loo$estimates[3,1]
+
+```
+
+
+
